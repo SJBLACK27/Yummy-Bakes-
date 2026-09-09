@@ -1,42 +1,36 @@
 import { NextResponse } from "next/server";
-import { asc, count, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { rewards, users } from "@/db/schema";
-import { requireAdmin } from "@/lib/session";
+import { rewards } from "@/db/schema";
+import { getSession } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const admin = await requireAdmin();
-  if (!admin)
-    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
+type Ctx = { params: Promise<{ id: string }> };
 
-  const customers = await db
-    .select({
-      id: users.id,
-      name: users.name,
-      mobile: users.mobile,
-      pointsBalance: users.pointsBalance,
-      totalOrders: users.totalOrders,
-      createdAt: users.createdAt,
-    })
-    .from(users)
-    .where(eq(users.role, "customer"))
-    .orderBy(asc(users.name));
+export async function POST(_req: Request, ctx: Ctx) {
+  const session = await getSession();
+  if (!session)
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
-  const live = await db
-    .select({ userId: rewards.userId, available: count() })
-    .from(rewards)
-    .where(eq(rewards.status, "available"))
-    .groupBy(rewards.userId);
+  const { id } = await ctx.params;
+  const [updated] = await db
+    .update(rewards)
+    .set({ status: "redeemed", redeemedAt: new Date() })
+    .where(
+      and(
+        eq(rewards.id, id),
+        eq(rewards.userId, session.sub),
+        eq(rewards.status, "available")
+      )
+    )
+    .returning();
 
-  const rewardMap = new Map(live.map((r) => [r.userId, r.available]));
+  if (!updated)
+    return NextResponse.json(
+      { ok: false, error: "Reward not found or already redeemed." },
+      { status: 404 }
+    );
 
-  return NextResponse.json({
-    ok: true,
-    customers: customers.map((c) => ({
-      ...c,
-      availableRewards: rewardMap.get(c.id) ?? 0,
-    })),
-  });
+  return NextResponse.json({ ok: true, reward: updated });
 }
